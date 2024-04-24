@@ -104,13 +104,13 @@ def train_model(model, X_train, y_train, X_val, y_val, epochs=50, batch_size=64)
 
 train_model(model, X_train, y_train, X_val, y_val)
 
-# Making Predictions on the Test Set
 def make_predictions(model, X_test):
-    print("Making predictions on test data...")
-    model.eval()
+    model.eval()  # Set the model to evaluation mode
     with torch.no_grad():
-        predictions = torch.max(model(X_test), 1)[1]
-    return predictions.cpu()
+        outputs = model(X_test)
+        _, predicted = torch.max(outputs, 1)
+    return predicted.cpu().numpy()
+
 
 predictions = make_predictions(model, X_test)
 print("Predictions:", predictions.numpy())

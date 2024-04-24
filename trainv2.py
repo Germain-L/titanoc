@@ -1,116 +1,90 @@
 import pandas as pd
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.metrics import accuracy_score
 
-# Set device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print("Using device:", device)
+# Load data
+train_data_path = './train.csv'
+test_data_path = './test.csv'
+train_data = pd.read_csv(train_data_path)
+test_data = pd.read_csv(test_data_path)
 
-# Data Loading and Preprocessing
-def load_and_preprocess_data():
-    print("Loading data...")
-    train_data = pd.read_csv('./train.csv')
-    test_data = pd.read_csv('./test.csv')
-    
-    # Feature Engineering
-    print("Feature engineering...")
-    train_data['FamilySize'] = train_data['SibSp'] + train_data['Parch'] + 1
-    test_data['FamilySize'] = test_data['SibSp'] + test_data['Parch'] + 1
-    train_data['IsAlone'] = (train_data['FamilySize'] == 1).astype(int)
-    test_data['IsAlone'] = (test_data['FamilySize'] == 1).astype(int)
-
+# Data Preprocessing and Feature Engineering
+def preprocess_data(train_data, test_data):
     # Fill missing values
-    print("Handling missing values...")
-    train_data['Age'].fillna(train_data['Age'].median(), inplace=True)
-    train_data['Embarked'].fillna('S', inplace=True)
-    train_data['Fare'].fillna(train_data['Fare'].median(), inplace=True)
-    test_data['Age'].fillna(test_data['Age'].median(), inplace=True)
-    test_data['Fare'].fillna(test_data['Fare'].median(), inplace=True)
+    for dataset in [train_data, test_data]:
+        dataset['Age'].fillna(dataset['Age'].median(), inplace=True)
+        dataset['Fare'].fillna(dataset['Fare'].median(), inplace=True)
+        dataset['Embarked'].fillna(dataset['Embarked'].mode()[0], inplace=True)
 
-    # Encoding categorical data
-    print("Encoding categorical data...")
-    for column in ['Sex', 'Embarked']:
+    # Extract titles from names
+    for dataset in [train_data, test_data]:
+        dataset['Title'] = dataset['Name'].apply(lambda x: x.split(',')[1].split('.')[0].strip())
+        dataset['Title'] = dataset['Title'].replace(['Lady', 'Countess','Capt', 'Col',\
+            'Don', 'Dr', 'Major', 'Rev', 'Sir', 'Jonkheer', 'Dona'], 'Rare')
+        dataset['Title'] = dataset['Title'].replace('Mlle', 'Miss')
+        dataset['Title'] = dataset['Title'].replace('Ms', 'Miss')
+        dataset['Title'] = dataset['Title'].replace('Mme', 'Mrs')
+    
+    # Encode categorical variables
+    label_encoder_features = ['Sex', 'Ticket', 'Embarked', 'Title']
+    for column in label_encoder_features:
         le = LabelEncoder()
-        train_data[column] = le.fit_transform(train_data[column])
+        concat_data = pd.concat([train_data[column], test_data[column]])  # Combine data to encode uniformly
+        le.fit(concat_data)
+        train_data[column] = le.transform(train_data[column])
         test_data[column] = le.transform(test_data[column])
 
-    # Normalizing data
-    print("Normalizing data...")
-    scaler = StandardScaler()
-    features = ['Pclass', 'Sex', 'Age', 'Fare', 'Embarked', 'FamilySize', 'IsAlone']
-    train_data[features] = scaler.fit_transform(train_data[features])
-    test_data[features] = scaler.transform(test_data[features])
+    # Create family size and is alone features
+    for dataset in [train_data, test_data]:
+        dataset['FamilySize'] = dataset['SibSp'] + dataset['Parch'] + 1
+        dataset['IsAlone'] = 1
+        dataset['IsAlone'].loc[dataset['FamilySize'] > 1] = 0
 
-    # Splitting the data
-    X_train, X_val, y_train, y_val = train_test_split(train_data[features], train_data['Survived'], test_size=0.2, random_state=42)
+    # Drop columns not used
+    drop_elements = ['PassengerId', 'Name', 'Cabin', 'SibSp', 'Parch']
+    train_data = train_data.drop(drop_elements, axis = 1)
+    test_data = test_data.drop(drop_elements, axis = 1)
 
-    # Convert to tensors
-    X_train = torch.tensor(X_train.values, dtype=torch.float32).to(device)
-    y_train = torch.tensor(y_train.values, dtype=torch.long).to(device)
-    X_val = torch.tensor(X_val.values, dtype=torch.float32).to(device)
-    y_val = torch.tensor(y_val.values, dtype=torch.long).to(device)
+    return train_data, test_data
 
-    print("Data loading and preprocessing complete.")
-    return X_train, y_train, X_val, y_val
+train_data, test_data = preprocess_data(train_data, test_data)
 
-X_train, y_train, X_val, y_val = load_and_preprocess_data()
+# Prepare data for training
+X = train_data.drop("Survived", axis=1)
+y = train_data["Survived"]
+X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# Neural Network with Dropout and BatchNorm
-class TitanicNN(nn.Module):
-    def __init__(self):
-        super(TitanicNN, self).__init__()
-        self.fc1 = nn.Linear(7, 128)
-        self.relu = nn.ReLU()
-        self.bn1 = nn.BatchNorm1d(128)
-        self.dropout = nn.Dropout(0.3)
-        self.fc2 = nn.Linear(128, 64)
-        self.bn2 = nn.BatchNorm1d(64)
-        self.fc3 = nn.Linear(64, 2)
+# Model: Random Forest Classifier
+rf = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=1)
+rf.fit(X_train, y_train)
+predictions = rf.predict(X_val)
+print(f'Validation Accuracy: {accuracy_score(y_val, predictions)}')
 
-    def forward(self, x):
-        x = self.relu(self.bn1(self.fc1(x)))
-        x = self.dropout(x)
-        x = self.relu(self.bn2(self.fc2(x)))
-        return self.fc3(x)
+# Hyperparameter Tuning using GridSearchCV
+param_grid = {
+    'n_estimators': [50, 100, 200],
+    'max_features': ['auto', 'sqrt', 'log2'],
+    'max_depth' : [4,5,6,7,8],
+    'criterion' :['gini', 'entropy']
+}
+CV_rf = GridSearchCV(estimator=rf, param_grid=param_grid, cv= 5)
+CV_rf.fit(X_train, y_train)
+print(f'Best Parameters: {CV_rf.best_params_}')
 
-model = TitanicNN().to(device)
-print("Model initialized.")
+# Retrain model with best parameters
+rf_best = RandomForestClassifier(**CV_rf.best_params_)
+rf_best.fit(X_train, y_train)
+predictions = rf_best.predict(X_val)
+print(f'Improved Validation Accuracy: {accuracy_score(y_val, predictions)}')
 
-# Training the Model
-def train_model(model, X_train, y_train, X_val, y_val, epochs=50, batch_size=64):
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
-    train_loader = DataLoader(TensorDataset(X_train, y_train), batch_size=batch_size, shuffle=True)
-    
-    for epoch in range(epochs):
-        model.train()
-        total_loss = 0
-        for data, target in train_loader:
-            data, target = data.to(device), target.to(device)
-            optimizer.zero_grad()
-            output = model(data)
-            loss = criterion(output, target)
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-        
-        scheduler.step()
-        model.eval()
-        with torch.no_grad():
-            outputs = model(X_val)
-            val_loss = criterion(outputs, y_val)
-            _, predicted = torch.max(outputs, 1)
-            correct = (predicted == y_val).sum().item()
-            accuracy = correct / len(y_val)
-
-        print(f'Epoch {epoch+1}, Train Loss: {total_loss / len(train_loader):.4f}, Val Loss: {val_loss.item():.4f}, Accuracy: {accuracy:.4f}')
-    print("Training complete.")
-
-train_model(model, X_train, y_train, X_val, y_val)
-
+# Prepare submission
+test_predictions = rf_best.predict(test_data)
+submission = pd.DataFrame({
+    "PassengerId": pd.read_csv(test_data_path)['PassengerId'],
+    "Survived": test_predictions
+})
+submission.to_csv('./submission.csv', index=False)
+print("Submission file is saved as 'submission.csv'.")
